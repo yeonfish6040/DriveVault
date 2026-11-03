@@ -62,21 +62,29 @@ def read_artifact(path, stage, expected_id, seen, allow_debug=False):
         validate_executable(gui.read_bytes(), target)
         validate_executable(cli.read_bytes(), target)
         seen.add(target)
-        return data['profile']
+        return data['profile'], data.get('signing', {}).get(target, {'kind': 'unsigned'})
 
 
-def combine(artifact_dir, out, allow_partial=False, allow_debug=False):
+def combine(artifact_dir, out, allow_partial=False, allow_debug=False, require_signatures=False):
     source_id = build_id()
     with tempfile.TemporaryDirectory(prefix='vault-complete-') as tmp:
         stage = Path(tmp) / 'VaultDrive'
         stage.mkdir()
         seen = set()
         profiles = set()
+        signatures = {}
         candidates = [p for p in artifact_dir.rglob('VaultDrive-*.zip') if p.name not in ('VaultDrive-complete.zip', 'VaultDrive-partial.zip')]
         if not candidates:
             raise ValueError('No platform archives found; build the platform packages first')
         for candidate in sorted(candidates):
-            profiles.add(read_artifact(candidate, stage, source_id, seen, allow_debug))
+            previous = seen.copy()
+            profile, signature = read_artifact(candidate, stage, source_id, seen, allow_debug)
+            target = (seen - previous).pop()
+            profiles.add(profile)
+            signatures[target] = signature
+            expected = 'macos-notarized' if 'apple-darwin' in target else 'windows-authenticode' if 'windows' in target else 'not-applicable'
+            if require_signatures and signature.get('kind') != expected:
+                raise ValueError(f'{target}: signed release metadata is missing')
         missing = set(TARGETS) - seen
         if missing and not allow_partial:
             raise ValueError('Complete package is missing: ' + ', '.join(sorted(missing)))
@@ -85,7 +93,7 @@ def combine(artifact_dir, out, allow_partial=False, allow_debug=False):
         if not missing and profiles != {'release'}:
             raise ValueError('A complete distribution requires release builds')
         decorate(stage)
-        manifest(stage, seen, profiles.pop(), source_id)
+        manifest(stage, seen, profiles.pop(), source_id, signing=signatures)
         result = archive(stage, out / ('VaultDrive-partial.zip' if missing else 'VaultDrive-complete.zip'))
         print(f'Included {len(seen)}/{len(TARGETS)} platforms. Missing: {", ".join(sorted(missing)) or "none"}')
         return result
@@ -99,6 +107,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--require-all', action='store_true', help='Fail unless all eight release platforms are present')
     mode.add_argument('--allow-partial', action='store_true', help='Compatibility alias for the default: package available platforms')
+    parser.add_argument('--require-signatures', action='store_true', help='Require macOS notarization and Windows signatures in artifact metadata')
     parser.add_argument('--allow-debug', action='store_true', help='Development partial packages only')
     args = parser.parse_args()
     try:
@@ -108,8 +117,8 @@ def main():
             if host not in TARGETS:
                 raise ValueError(f'Unsupported distribution host {host}; use an MSVC Rust toolchain on Windows')
             subprocess.run(['cargo', 'build', '--workspace', '--release', '--locked', '--target', host], cwd=ROOT, check=True)
-            package(host, out=args.artifact_dir)
-        print(combine(args.artifact_dir, args.out, not args.require_all, args.allow_debug))
+            package(host, out=args.artifact_dir, signed=args.require_signatures)
+        print(combine(args.artifact_dir, args.out, not args.require_all, args.allow_debug, args.require_signatures))
     except (ValueError, OSError, subprocess.SubprocessError, zipfile.BadZipFile, KeyError, TypeError) as error:
         parser.exit(1, f'Packaging failed: {error}\n')
 

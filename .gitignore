@@ -10,3 +10,8 @@ vault.bak
 vault.lock
 # Exported design references/fonts are not application source.
 /design/system/
+# Private signing credentials are supplied through GitHub Secrets only.
+*.p12
+*.pfx
+*.p8
+*.keychain-db

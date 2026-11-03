@@ -32,7 +32,7 @@ def validate_executable(data, target):
 
 def build_id():
     digest = hashlib.sha256()
-    paths = [ROOT / 'Cargo.toml', ROOT / 'Cargo.lock', ROOT / 'scripts/package.py', ROOT / 'scripts/build_complete.py']
+    paths = [ROOT / 'Cargo.toml', ROOT / 'Cargo.lock', ROOT / 'scripts/package.py', ROOT / 'scripts/build_complete.py', ROOT / 'scripts/signing.py']
     for crate in sorted(ROOT.glob('vault-*')):
         if crate.is_dir():
             paths += [crate / 'Cargo.toml', *sorted((crate / 'src').rglob('*.rs'))]
@@ -50,12 +50,12 @@ def decorate(stage):
     for name in ('README.md', 'docs/SECURITY.md', 'docs/PORTABILITY.md', 'docs/VALIDATION.md'):
         shutil.copy2(ROOT / name, stage / Path(name).name)
 
-def manifest(stage, targets, profile, source_id=None):
+def manifest(stage, targets, profile, source_id=None, signing=None):
     files = {p.relative_to(stage).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(stage.rglob('*')) if p.is_file() and p.name != 'manifest.json'}
     data = dict(schema=1, buildId=source_id or build_id(), profile=profile,
                 targets=sorted(targets), missingTargets=sorted(set(TARGETS) - set(targets)),
-                complete=set(targets) == set(TARGETS), files=files)
+                complete=set(targets) == set(TARGETS), files=files, signing=signing or {})
     (stage / 'manifest.json').write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
     return data
 
@@ -77,7 +77,7 @@ def archive(stage, output):
     output.with_suffix('.zip.sha256').write_text(f'{checksum}  {output.name}\n', encoding='utf-8')
     return output
 
-def package(target, binary_dir=None, profile='release', out=None):
+def package(target, binary_dir=None, profile='release', out=None, signed=False):
     if target not in TARGETS:
         raise ValueError(f'Unsupported distribution target: {target}')
     binaries = binary_dir or ROOT / 'target' / target / profile
@@ -90,7 +90,7 @@ def package(target, binary_dir=None, profile='release', out=None):
             (app / 'MacOS').mkdir(parents=True)
             shutil.copy2(binaries / 'vault-gui', app / 'MacOS/VaultDrive')
             with (app / 'Info.plist').open('wb') as f:
-                plistlib.dump(dict(CFBundleExecutable='VaultDrive', CFBundleIdentifier='dev.vaultdrive.desktop', CFBundleName='VaultDrive', CFBundlePackageType='APPL', NSHighResolutionCapable=True), f)
+                plistlib.dump(dict(CFBundleExecutable='VaultDrive', CFBundleIdentifier='dev.vaultdrive.desktop', CFBundleName='VaultDrive', CFBundlePackageType='APPL', NSHighResolutionCapable=True, CFBundleVersion='0.1.0', CFBundleShortVersionString='0.1.0'), f)
         else:
             shutil.copy2(binaries / ('vault-gui.exe' if 'windows' in target else 'vault-gui'), destination)
         shutil.copy2(binaries / ('vault.exe' if 'windows' in target else 'vault'), destination)
@@ -98,10 +98,25 @@ def package(target, binary_dir=None, profile='release', out=None):
         cli = destination / ('vault.exe' if 'windows' in target else 'vault')
         for binary in (gui, cli):
             validate_executable(binary.read_bytes(), target)
+        attestation = {'kind': 'not-applicable' if 'linux' in target else 'unsigned'}
+        if signed:
+            if profile != 'release':
+                raise ValueError('Distribution signing requires a release build')
+            from signing import sign
+            attestation = sign(destination, target)
         decorate(stage)
-        manifest(stage, [target], profile)
+        manifest(stage, [target], profile, signing={target: attestation})
         output = (out or ROOT / 'target/portable') / f'{stage.name}.zip'
-        return archive(stage, output)
+        result = archive(stage, output)
+        if signed and 'apple-darwin' in target:
+            from signing import verify_macos_archive
+            try:
+                verify_macos_archive(result, target)
+            except Exception:
+                result.unlink(missing_ok=True)
+                result.with_suffix('.zip.sha256').unlink(missing_ok=True)
+                raise
+        return result
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -109,8 +124,12 @@ def main():
     parser.add_argument('--binary-dir', type=Path)
     parser.add_argument('--profile', choices=('release', 'debug'), default='release')
     parser.add_argument('--out', type=Path)
+    parser.add_argument('--sign', action='store_true', help='Sign Windows/macOS and notarize macOS before packaging')
     args = parser.parse_args()
-    print(package(args.target, args.binary_dir, args.profile, args.out))
+    try:
+        print(package(args.target, args.binary_dir, args.profile, args.out, args.sign))
+    except ValueError as error:
+        parser.exit(1, f'Packaging failed: {error}\n')
 
 if __name__ == '__main__':
     main()
