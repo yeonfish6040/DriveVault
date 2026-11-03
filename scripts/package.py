@@ -69,6 +69,7 @@ def archive(stage, output):
             for p in sorted(stage.rglob('*')):
                 if p.is_file():
                     z.write(p, Path(stage.name) / p.relative_to(stage))
+        temporary.chmod(0o644)  # Docker-built artifacts must be readable by the Actions runner.
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)

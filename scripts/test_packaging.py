@@ -49,6 +49,8 @@ class Packaging(unittest.TestCase):
                 self.assertIn('VaultDrive/VaultDrive.bat', z.namelist())
                 self.assertEqual(z.getinfo('VaultDrive/VaultDrive.sh').external_attr >> 16 & 0o111, 0o111)
             self.assertTrue(archive.with_suffix('.zip.sha256').exists())
+            if os.name == 'posix':
+                self.assertEqual(archive.stat().st_mode & 0o777, 0o644)
 
     def test_cli_default_packages_available_targets_and_require_all_fails(self):
         import sys
