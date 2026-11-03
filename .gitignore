@@ -1,0 +1,12 @@
+/target/
+/work/
+__pycache__/
+*.pyc
+# Runtime/user state and vault data must not enter source control.
+vaults.json
+vaults.lock
+vault.dat
+vault.bak
+vault.lock
+# Exported design references/fonts are not application source.
+/design/system/

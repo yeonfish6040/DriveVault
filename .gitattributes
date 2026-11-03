@@ -1,0 +1,6 @@
+# Source fingerprints must match across Windows/macOS/Linux checkouts.
+* text=auto eol=lf
+*.zip binary
+*.png binary
+*.jpg binary
+*.woff2 binary

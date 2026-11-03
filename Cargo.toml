@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["vault-core", "vault-fs", "vault-dav", "vault-cli", "vault-gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"

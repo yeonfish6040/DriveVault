@@ -1,0 +1,18 @@
+[package]
+name = "vault-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+eframe = "0.31"
+rfd = "0.15"
+anyhow = "1"
+rand = "0.8"
+zeroize = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "time"] }
+vault-core = { path = "../vault-core" }
+vault-fs = { path = "../vault-fs" }
+vault-dav = { path = "../vault-dav" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"

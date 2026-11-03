@@ -1,0 +1,9 @@
+[package]
+name = "vault-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+anyhow = "1"
+vault-core = { path = "../vault-core" }
+tempfile = "3"

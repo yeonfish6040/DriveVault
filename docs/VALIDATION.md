@@ -1,0 +1,14 @@
+# Validation performed locally
+
+Host: Apple Silicon macOS, Rust 1.96.0.
+
+- `cargo fmt --all -- --check`, workspace Clippy with warnings denied, workspace tests and native GUI/CLI debug builds pass.
+- Tests cover encryption roundtrip/wrong password/tampering; session exclusivity/release; prior ciphertext backup; invalid trees preserving committed data; in-memory rollback after failed save; ambiguous paths; nested plaintext export preserving ciphertext; authenticated DAV file lifecycle; controlled listener shutdown; non-loopback connection refusal; no-password connection arguments; portable registry relocation/corrupt-registry refusal; closing during startup; export-password failure.
+- Non-GUI core/fs/dav/CLI `cargo check` passed for x86_64-apple-darwin, x86_64-pc-windows-gnu, i686-pc-windows-gnu, aarch64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, i686-unknown-linux-gnu.
+- GUI `cargo check` passed for x86_64-apple-darwin, i686-pc-windows-gnu and aarch64-pc-windows-msvc, plus the native ARM64 Mac. A check validates compilation/type checking; it does not link a standalone binary or execute it on those systems.
+
+GUI compilation for Linux, Windows/MSVC x86/x64 linking and native execution on Windows/Linux/Intel Mac are not locally verified. The GitHub workflow is configuration only and has not been remotely run. It does not establish release readiness. Writable OS WebDAV mounting, automatic unmount, external-SSD power interruption, cross-platform filesystem behavior, OS clean-machine dependencies and signatures/notarization remain unverified or incomplete.
+
+Further regression checks: stale conditional PUT/create-only PUT, recursive MOVE and cycle/overwrite/cross-server rejection, failed MOVE rollback, browser-Origin and unsupported DAV lock condition rejection, partial PUT protection, overload backpressure, stale registry edits, portable export name validation, and a real TCP/HTTP authenticated write followed by shutdown/reopen. These checks do not establish writable native client compatibility.
+
+Portable packaging: five Python regressions pass (eight-target fixture assembly, missing-target refusal, header mismatch, checksum tampering, shell routing/missing-binary behavior). Synthetic executable headers used by packaging tests exist only inside temporary test directories; they are not distributed. Actual native ARM64 Mac Release binaries were built, packaged, extracted, selected by `VaultDrive.sh` and observed running in the compact GUI. The locally generated distribution contains one real platform and is explicitly named `VaultDrive-partial.zip`. Complete eight-platform runtime artifacts have not been produced locally. Windows batch routing remains unexecuted on Windows.
