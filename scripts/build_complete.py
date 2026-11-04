@@ -10,6 +10,10 @@ import zipfile
 from package import ROOT, TARGETS, archive, build_id, decorate, manifest, package, validate_executable
 
 
+class StaleArtifactError(ValueError):
+    pass
+
+
 def read_artifact(path, stage, expected_id, seen, allow_debug=False):
     with zipfile.ZipFile(path) as z:
         infos = z.infolist()
@@ -17,8 +21,10 @@ def read_artifact(path, stage, expected_id, seen, allow_debug=False):
         if len(manifests) != 1 or manifests[0].file_size > 1024 * 1024:
             raise ValueError(f'{path.name}: missing or invalid manifest')
         data = json.loads(z.read(manifests[0]))
-        if data.get('schema') != 1 or data.get('buildId') != expected_id:
-            raise ValueError(f'{path.name}: source version does not match this checkout')
+        if data.get('schema') != 1:
+            raise ValueError(f'{path.name}: unsupported manifest schema')
+        if data.get('buildId') != expected_id:
+            raise StaleArtifactError(f'{path.name}: source version does not match this checkout')
         if data.get('profile') != 'release' and not allow_debug:
             raise ValueError(f'{path.name}: release binaries required (use --allow-debug for development only)')
         targets = data.get('targets', [])
@@ -27,6 +33,7 @@ def read_artifact(path, stage, expected_id, seen, allow_debug=False):
         target = targets[0]
         prefix = PurePosixPath(manifests[0].filename).parts[0]
         found = set()
+        keep_launcher = not (stage / 'VaultDrive.app').exists()
         expected = data.get('files', {})
         if sum(i.file_size for i in infos) > 512 * 1024 * 1024:
             raise ValueError(f'{path.name}: oversized archive')
@@ -45,6 +52,13 @@ def read_artifact(path, stage, expected_id, seen, allow_debug=False):
             if hashlib.sha256(content).hexdigest() != expected.get(relative.as_posix()):
                 raise ValueError(f'{path.name}: checksum mismatch: {relative}')
             found.add(relative.as_posix())
+            if relative.parts[0] == 'VaultDrive.app':
+                if 'apple-darwin' not in target:
+                    raise ValueError(f'{path.name}: macOS launcher in a non-macOS archive')
+                if keep_launcher:
+                    dest=stage.joinpath(*relative.parts)
+                    dest.parent.mkdir(parents=True,exist_ok=True)
+                    dest.write_bytes(content);dest.chmod((info.external_attr>>16)&0o777)
             if relative.parts[0] == 'bin':
                 if len(relative.parts) < 3 or relative.parts[1] != target:
                     raise ValueError(f'{path.name}: mismatched binary directory')
@@ -65,7 +79,7 @@ def read_artifact(path, stage, expected_id, seen, allow_debug=False):
         return data['profile'], data.get('signing', {}).get(target, {'kind': 'unsigned'})
 
 
-def combine(artifact_dir, out, allow_partial=False, allow_debug=False, require_signatures=False):
+def combine(artifact_dir, out, allow_partial=False, allow_debug=False, require_signatures=False, ignore_stale=False):
     source_id = build_id()
     with tempfile.TemporaryDirectory(prefix='vault-complete-') as tmp:
         stage = Path(tmp) / 'VaultDrive'
@@ -78,13 +92,21 @@ def combine(artifact_dir, out, allow_partial=False, allow_debug=False, require_s
             raise ValueError('No platform archives found; build the platform packages first')
         for candidate in sorted(candidates):
             previous = seen.copy()
-            profile, signature = read_artifact(candidate, stage, source_id, seen, allow_debug)
+            try:
+                profile, signature = read_artifact(candidate, stage, source_id, seen, allow_debug)
+            except StaleArtifactError:
+                if not ignore_stale:
+                    raise
+                print(f'Skipping older build: {candidate.name}')
+                continue
             target = (seen - previous).pop()
             profiles.add(profile)
             signatures[target] = signature
             expected = 'macos-notarized' if 'apple-darwin' in target else 'windows-authenticode' if 'windows' in target else 'not-applicable'
             if require_signatures and signature.get('kind') != expected:
                 raise ValueError(f'{target}: signed release metadata is missing')
+        if not seen:
+            raise ValueError('No current-source platform archives found')
         missing = set(TARGETS) - seen
         if missing and not allow_partial:
             raise ValueError('Complete package is missing: ' + ', '.join(sorted(missing)))
@@ -118,7 +140,7 @@ def main():
                 raise ValueError(f'Unsupported distribution host {host}; use an MSVC Rust toolchain on Windows')
             subprocess.run(['cargo', 'build', '--workspace', '--release', '--locked', '--target', host], cwd=ROOT, check=True)
             package(host, out=args.artifact_dir, signed=args.require_signatures)
-        print(combine(args.artifact_dir, args.out, not args.require_all, args.allow_debug, args.require_signatures))
+        print(combine(args.artifact_dir, args.out, not args.require_all, args.allow_debug, args.require_signatures, ignore_stale=not args.require_all))
     except (ValueError, OSError, subprocess.SubprocessError, zipfile.BadZipFile, KeyError, TypeError) as error:
         parser.exit(1, f'Packaging failed: {error}\n')
 

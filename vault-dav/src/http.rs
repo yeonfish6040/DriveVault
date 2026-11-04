@@ -13,6 +13,7 @@ use vault_fs::{parent_exists, validate, Store};
 pub(crate) struct App {
     pub(crate) store: Arc<Mutex<Store>>,
     pub(crate) authorization: String,
+    pub(crate) guest_prefix: Option<String>,
     pub(crate) admission: Arc<tokio::sync::Semaphore>,
 }
 fn response(status: StatusCode, body: impl Into<Body>) -> Response {
@@ -29,11 +30,12 @@ fn xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 pub(crate) async fn handle(State(app): State<App>, req: Request) -> Response {
-    if req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        != Some(app.authorization.as_str())
+    if app.guest_prefix.is_none()
+        && req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            != Some(app.authorization.as_str())
     {
         let mut r = response(StatusCode::UNAUTHORIZED, "Authentication required");
         r.headers_mut().insert(
@@ -55,7 +57,24 @@ pub(crate) async fn handle(State(app): State<App>, req: Request) -> Response {
         );
     }
     let method = req.method().as_str().to_owned();
-    let path = match decode_path(req.uri().path()) {
+    let raw_path = if let Some(prefix) = &app.guest_prefix {
+        if method == "OPTIONS" && req.uri().path() == "/" {
+            let mut r = response(StatusCode::OK, "");
+            r.headers_mut().insert("dav", HeaderValue::from_static("1"));
+            r.headers_mut().insert(
+                header::ALLOW,
+                HeaderValue::from_static("OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, MOVE, PROPFIND"),
+            );
+            return r;
+        }
+        match strip_guest_path(req.uri().path(), prefix) {
+            Some(p) => p,
+            None => return response(StatusCode::NOT_FOUND, "not found"),
+        }
+    } else {
+        req.uri().path()
+    };
+    let path = match decode_path(raw_path) {
         Ok(p) => p,
         Err(_) => return response(StatusCode::BAD_REQUEST, "invalid path"),
     };
@@ -79,7 +98,20 @@ pub(crate) async fn handle(State(app): State<App>, req: Request) -> Response {
                             && uri.authority().map(|a| a.as_str())
                                 == headers.get(header::HOST).and_then(|v| v.to_str().ok()))) =>
             {
-                match decode_path(uri.path()) {
+                let raw_destination = if let Some(prefix) = &app.guest_prefix {
+                    match strip_guest_path(uri.path(), prefix) {
+                        Some(p) => p,
+                        None => {
+                            return response(
+                                StatusCode::BAD_REQUEST,
+                                "destination outside this vault",
+                            )
+                        }
+                    }
+                } else {
+                    uri.path()
+                };
+                match decode_path(raw_destination) {
                     Ok(p) => Some(p),
                     Err(_) => return response(StatusCode::BAD_REQUEST, "invalid destination"),
                 }
@@ -355,10 +387,13 @@ fn dispatch(
                     Entry::Directory => ("<d:collection/>", 0),
                     Entry::File(b) => ("", b.len()),
                 };
-                let href =
-                    percent_encoding::utf8_percent_encode(&p, percent_encoding::NON_ALPHANUMERIC)
-                        .to_string()
-                        .replace("%2F", "/");
+                let public_path = format!("{}{p}", app.guest_prefix.as_deref().unwrap_or(""));
+                let href = percent_encoding::utf8_percent_encode(
+                    &public_path,
+                    percent_encoding::NON_ALPHANUMERIC,
+                )
+                .to_string()
+                .replace("%2F", "/");
                 let href = if matches!(e, Entry::Directory) && !href.ends_with('/') {
                     format!("{href}/")
                 } else {
@@ -378,6 +413,16 @@ fn dispatch(
     }
 }
 
+fn strip_guest_path<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = path.strip_prefix(prefix)?;
+    if rest.is_empty() {
+        Some("/")
+    } else if rest.starts_with('/') {
+        Some(rest)
+    } else {
+        None
+    }
+}
 fn decode_path(raw: &str) -> Result<String, ()> {
     let decoded = percent_decode_str(raw).decode_utf8().map_err(|_| ())?;
     let p = decoded.trim_end_matches('/');
@@ -402,6 +447,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let vault = vault_core::Vault::create(dir.path(), b"secret").unwrap();
             let app = App {
+                guest_prefix: None,
                 admission: Arc::new(tokio::sync::Semaphore::new(4)),
                 store: Arc::new(Mutex::new(Store {
                     vault,
@@ -433,6 +479,72 @@ mod tests {
             .await
         }
     }
+    #[tokio::test]
+    async fn guest_access_requires_capability_but_not_basic_auth() {
+        let mut f = Fixture::new();
+        let prefix = format!("/{}", "a".repeat(48));
+        f.app.guest_prefix = Some(prefix.clone());
+        async fn guest(
+            f: &Fixture,
+            method: &str,
+            path: &str,
+            destination: Option<&str>,
+            body: &str,
+        ) -> Response {
+            let mut req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "127.0.0.1:49152")
+                .header("depth", "1");
+            if let Some(destination) = destination {
+                req = req.header("destination", destination);
+            }
+            handle(
+                State(f.app.clone()),
+                req.body(Body::from(body.to_owned())).unwrap(),
+            )
+            .await
+        }
+        for path in [
+            "/".to_owned(),
+            "/wrong/file".into(),
+            format!("{prefix}extra/file"),
+        ] {
+            let r = guest(&f, "GET", &path, None, "").await;
+            assert_eq!(r.status(), StatusCode::NOT_FOUND);
+            assert!(!r.headers().contains_key(header::WWW_AUTHENTICATE));
+        }
+        let path = format!("{prefix}/file");
+        assert_eq!(
+            guest(&f, "PUT", &path, None, "guest data").await.status(),
+            StatusCode::CREATED
+        );
+        let read = guest(&f, "GET", &path, None, "").await;
+        assert_eq!(
+            to_bytes(read.into_body(), 100).await.unwrap().as_ref(),
+            b"guest data"
+        );
+        let listing = guest(&f, "PROPFIND", &format!("{prefix}/"), None, "").await;
+        let xml =
+            String::from_utf8(to_bytes(listing.into_body(), 4096).await.unwrap().to_vec()).unwrap();
+        assert!(xml.contains(&format!("<d:href>{path}</d:href>")));
+        assert_eq!(
+            guest(&f, "MOVE", &path, Some("/escape"), "").await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        let moved = format!("{prefix}/moved");
+        assert_eq!(
+            guest(&f, "MOVE", &path, Some(&moved), "").await.status(),
+            StatusCode::CREATED
+        );
+        // Changing sessions revokes an old capability immediately.
+        f.app.guest_prefix = Some(format!("/{}", "b".repeat(48)));
+        assert_eq!(
+            guest(&f, "GET", &moved, None, "").await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
     #[tokio::test]
     async fn partial_put_is_rejected_without_truncating_file() {
         let f = Fixture::new();

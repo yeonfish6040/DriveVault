@@ -1,4 +1,6 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod app;
+mod password;
 mod platform;
 mod registry;
 mod session;

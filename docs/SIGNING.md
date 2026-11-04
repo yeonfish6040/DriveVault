@@ -23,7 +23,7 @@ The Windows PFX path is for an existing exportable certificate. Hardware-token-o
 
 ## Ordering and verification
 
-`package.py --sign` stages the real binaries and complete Info.plist first. macOS then imports the selected identity into a temporary keychain, enables hardened runtime and trusted timestamps, signs both GUI bundle and CLI, submits a ZIP with `notarytool --wait`, and accepts only an `Accepted` response. It staples the ticket to the app, validates the ticket, verifies the signature and assesses the bundle with Gatekeeper. The CLI is included in the notarization submission, but Apple does not support stapling standalone executables. The packaged app is extracted from the final platform ZIP and reverified, so signature/ticket loss in that archive fails the build.
+`package.py --sign` stages the real binaries and complete Info.plist first. macOS then imports the selected identity into a temporary keychain, enables hardened runtime and trusted timestamps, signs the GUI bundle, universal launcher bundle and CLI, submits a ZIP with `notarytool --wait`, and accepts only an `Accepted` response. It staples tickets to both app bundles, validates the ticket, verifies the signature and assesses the bundle with Gatekeeper. The CLI is included in the notarization submission, but Apple does not support stapling standalone executables. Both packaged apps are extracted from the final platform ZIP and reverified, so signature/ticket loss in that archive fails the build.
 
 Windows signs both GUI and CLI with SignTool using SHA-256 and an RFC 3161 timestamp, then verifies under the Authenticode policy. Windows SDK SignTool must exist on the runner. Linux binaries have no native equivalent to these signing steps in this workflow.
 

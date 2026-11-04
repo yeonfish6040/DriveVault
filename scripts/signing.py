@@ -66,6 +66,7 @@ def macos(destination):
         raise ValueError('A Developer ID Application identity is required for macOS distribution')
     app = destination / 'VaultDrive.app'
     cli = destination / 'vault'
+    launcher=destination.parent.parent/'VaultDrive.app'
     with tempfile.TemporaryDirectory(prefix='vault-sign-') as tmp:
         private = Path(tmp)
         key = private / 'AuthKey.p8'
@@ -73,27 +74,27 @@ def macos(destination):
         with mac_keychain(private) as keychain:
             # Sign the bundle after Info.plist exists; hardened runtime and a
             # trusted timestamp are required. Never modify it after stapling.
-            for binary in (cli, app):
+            for binary in (cli, app, launcher):
                 run(['codesign', '--force', '--options', 'runtime', '--timestamp', '--sign', identity, '--keychain', keychain, binary])
                 run(['codesign', '--verify', '--strict', '--verbose=2', binary])
             submission = private / 'notarize.zip'
-            run(['ditto', '-c', '-k', '--keepParent', destination, submission])
+            run(['ditto', '-c', '-k', '--keepParent', destination.parent.parent, submission])
             auth = ['--key', key, '--key-id', os.environ['APPLE_API_KEY_ID'], '--issuer', os.environ['APPLE_API_ISSUER_ID']]
             result = json.loads(run(['xcrun', 'notarytool', 'submit', submission, *auth, '--wait', '--timeout', '30m', '--output-format', 'json']))
             if result.get('status') != 'Accepted':
                 raise ValueError(f'Apple notarization was not accepted (submission {result.get("id", "unknown")})')
-            for attempt in range(6):
-                try:
-                    run(['xcrun', 'stapler', 'staple', app])
-                    break
-                except ValueError:
-                    if attempt == 5:
-                        raise
-                    time.sleep(10)  # Apple's ticket may need time to propagate.
-
-            run(['xcrun', 'stapler', 'validate', app])
-            run(['codesign', '--verify', '--strict', '--verbose=2', app])
-            run(['spctl', '--assess', '--type', 'execute', '--verbose=2', app])
+            for bundle in (app,launcher):
+                for attempt in range(6):
+                    try:
+                        run(['xcrun', 'stapler', 'staple', bundle])
+                        break
+                    except ValueError:
+                        if attempt == 5:
+                            raise
+                        time.sleep(10)
+                run(['xcrun', 'stapler', 'validate', bundle])
+                run(['codesign', '--verify', '--strict', '--verbose=2', bundle])
+                run(['spctl', '--assess', '--type', 'execute', '--verbose=2', bundle])
     return {'kind': 'macos-notarized', 'submissionId': result['id']}
 
 
@@ -141,9 +142,10 @@ def verify_macos_archive(archive, target):
                 if not info.is_dir():
                     (Path(tmp) / info.filename).chmod((info.external_attr >> 16) & 0o777)
         app = Path(tmp) / f'VaultDrive-{target}' / 'bin' / target / 'VaultDrive.app'
-        run(['codesign', '--verify', '--strict', '--verbose=2', app])
-        run(['xcrun', 'stapler', 'validate', app])
-        run(['spctl', '--assess', '--type', 'execute', '--verbose=2', app])
+        for bundle in (app, Path(tmp)/f'VaultDrive-{target}'/'VaultDrive.app'):
+            run(['codesign', '--verify', '--strict', '--verbose=2', bundle])
+            run(['xcrun', 'stapler', 'validate', bundle])
+            run(['spctl', '--assess', '--type', 'execute', '--verbose=2', bundle])
 
 if __name__ == '__main__':
     try:

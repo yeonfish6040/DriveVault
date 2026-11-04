@@ -47,6 +47,8 @@ class Packaging(unittest.TestCase):
                 data = json.loads(z.read('VaultDrive/manifest.json'))
                 self.assertTrue(data['complete']); self.assertEqual(len(data['targets']), 8)
                 self.assertIn('VaultDrive/VaultDrive.bat', z.namelist())
+                if __import__('platform').system() == 'Darwin':
+                    self.assertIn('VaultDrive/VaultDrive.app/Contents/MacOS/VaultDriveLauncher', z.namelist())
                 self.assertEqual(z.getinfo('VaultDrive/VaultDrive.sh').external_attr >> 16 & 0o111, 0o111)
             self.assertTrue(archive.with_suffix('.zip.sha256').exists())
             if os.name == 'posix':
@@ -69,6 +71,22 @@ class Packaging(unittest.TestCase):
             self.assertNotEqual(strict.returncode, 0)
             self.assertIn('missing', strict.stderr)
             self.assertFalse((base / 'strict/VaultDrive-complete.zip').exists())
+
+    def test_default_partial_skips_old_builds_but_strict_does_not(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp)
+            self.artifact(base,TARGETS[0])
+            binaries=base/'old';binaries.mkdir()
+            for name in ('vault-gui','vault'):(binaries/name).write_bytes(mock_header(TARGETS[1]))
+            with patch('package.build_id',return_value='previous-source'):
+                package(TARGETS[1],binaries,out=base/'artifacts')
+            archive=combine(base/'artifacts',base/'out',allow_partial=True,ignore_stale=True)
+            with zipfile.ZipFile(archive) as z:
+                data=json.loads(z.read('VaultDrive/manifest.json'))
+                self.assertEqual(data['targets'],[TARGETS[0]])
+            with self.assertRaisesRegex(ValueError,'source version'):
+                combine(base/'artifacts',base/'strict',allow_partial=True)
 
     def test_wrong_cpu_header_is_rejected(self):
         with self.assertRaises(ValueError):

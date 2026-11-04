@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use vault_fs::Store;
 pub async fn serve(store: Store, user: &str, password: &str, port: u16) -> anyhow::Result<()> {
     let app = App {
+        guest_prefix: None,
         admission: Arc::new(tokio::sync::Semaphore::new(4)),
         store: Arc::new(Mutex::new(store)),
         authorization: format!("Basic {}", STANDARD.encode(format!("{user}:{password}"))),
@@ -34,11 +35,35 @@ pub async fn serve_controlled(
     listener: tokio::net::TcpListener,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
+    serve_session(store, password, None, listener, shutdown).await
+}
+
+/// Guest access uses a per-unlock, unguessable URL path instead of a second password.
+pub async fn serve_guest(
+    store: Store,
+    token: &str,
+    listener: tokio::net::TcpListener,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        token.len() == 48 && token.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid guest capability"
+    );
+    serve_session(store, "", Some(format!("/{token}")), listener, shutdown).await
+}
+async fn serve_session(
+    store: Store,
+    password: &str,
+    guest_prefix: Option<String>,
+    listener: tokio::net::TcpListener,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         listener.local_addr()?.ip().is_loopback(),
         "loopback listener required"
     );
     let app = App {
+        guest_prefix,
         admission: Arc::new(tokio::sync::Semaphore::new(4)),
         store: Arc::new(Mutex::new(store)),
         authorization: format!("Basic {}", STANDARD.encode(format!("vault:{password}"))),
@@ -165,6 +190,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let vault = Vault::create(&dir, b"test password").unwrap();
         let app = App {
+            guest_prefix: None,
             admission: Arc::new(tokio::sync::Semaphore::new(4)),
             store: Arc::new(Mutex::new(Store {
                 vault,

@@ -31,12 +31,10 @@ pub(crate) struct App {
     password: String,
     confirm: String,
     automatic: bool,
-    reveal: bool,
     focus_password: bool,
     notice: Option<String>,
     error: Option<String>,
     url: String,
-    credential: Zeroizing<String>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     events: Option<mpsc::Receiver<Event>>,
     worker: Option<JoinHandle<()>>,
@@ -61,12 +59,10 @@ impl Default for App {
             password: String::new(),
             confirm: String::new(),
             automatic: true,
-            reveal: false,
             focus_password: false,
             notice: None,
             error,
             url: String::new(),
-            credential: Zeroizing::new(String::new()),
             stop: None,
             events: None,
             worker: None,
@@ -76,6 +72,7 @@ impl Default for App {
 impl Drop for App {
     fn drop(&mut self) {
         self.clear_passwords();
+        self.url.zeroize();
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -103,7 +100,7 @@ impl App {
     fn connect(&mut self) {
         self.notice = Some(match crate::platform::request_connection(&self.url) {
             Ok(()) => {
-                "Connection requested. OS authentication may appear. Mount status is not verified."
+                "Connection requested. Choose Guest if prompted. Mount status is not verified."
                     .into()
             }
             Err(e) => e,
@@ -113,8 +110,7 @@ impl App {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
             self.phase = Phase::Stopping;
-            self.credential.zeroize();
-            self.reveal = false;
+            self.url.zeroize();
         }
     }
     fn start(&mut self) {
@@ -125,6 +121,10 @@ impl App {
             self.error = Some("Choose a vault folder.".into());
             return;
         };
+        if !crate::password::allowed(&self.password) || !crate::password::allowed(&self.confirm) {
+            self.error = Some("Use English letters, numbers, and symbols.".into());
+            return;
+        }
         if self.password.is_empty() {
             self.error = Some("Enter a password.".into());
             return;
@@ -177,13 +177,8 @@ impl App {
         }
         for event in events {
             match event {
-                Event::Ready {
-                    url,
-                    credential,
-                    stop,
-                } => {
+                Event::Ready { url, stop } => {
                     self.url = url;
-                    self.credential = credential;
                     self.stop = Some(stop);
                     self.phase = Phase::Unlocked;
                     self.screen = Screen::Connection;
@@ -201,9 +196,8 @@ impl App {
                 Event::Finished(result) => {
                     self.stop = None;
                     self.phase = Phase::Idle;
-                    self.credential.zeroize();
+                    self.url.zeroize();
                     self.url.clear();
-                    self.reveal = false;
                     match result {
                         Ok(()) => {
                             self.screen = Screen::Home;
@@ -243,7 +237,7 @@ impl App {
                 if worker.join().is_err() {
                     self.error=Some("The vault worker stopped unexpectedly. Reopen the vault before continuing.".into());
                     self.stop = None;
-                    self.credential.zeroize();
+                    self.url.zeroize();
                     self.phase = Phase::Idle;
                     self.screen = Screen::Home;
                     self.url.clear();
@@ -481,12 +475,8 @@ impl App {
             ui.label(path.display().to_string());
         }
         ui.add_space(16.0);
-        ui.monospace(&self.url);
-        ui.label("Username: vault");
-        ui.checkbox(&mut self.reveal, "Show temporary connection password");
-        if self.reveal {
-            ui.monospace(self.credential.as_str());
-        }
+        ui.label("Connect as Guest. No additional password.");
+        ui.label("The connection address changes every time you unlock.");
         ui.add_space(16.0);
         ui.add_enabled_ui(self.phase == Phase::Unlocked, |ui| {
             ui.horizontal(|ui| {
@@ -516,6 +506,25 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(100));
         self.poll();
+        let password_screen = matches!(
+            self.screen,
+            Screen::Unlock | Screen::CreatePassword | Screen::Decrypt
+        );
+        if password_screen {
+            let mut rejected = false;
+            ctx.input_mut(|input| {
+                input.events.retain(|event| {
+                    let keep = crate::password::allowed_event(event);
+                    rejected |= !keep;
+                    keep
+                })
+            });
+            if rejected {
+                self.error = Some(
+                    "Korean input is disabled. Use English letters, numbers, and symbols.".into(),
+                );
+            }
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -597,5 +606,12 @@ impl eframe::App for App {
                     );
                 });
             });
+        if password_screen {
+            ctx.output_mut(|output| output.ime = None);
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEPurpose(
+                egui::IMEPurpose::Password,
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(false));
+        }
     }
 }

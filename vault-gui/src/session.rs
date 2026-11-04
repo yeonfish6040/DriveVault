@@ -4,7 +4,6 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) enum Event {
     Ready {
         url: String,
-        credential: Zeroizing<String>,
         stop: tokio::sync::oneshot::Sender<()>,
     },
     Finished(Result<(), String>),
@@ -29,7 +28,6 @@ pub(crate) fn spawn(
             rt.block_on(async {
                 let listener =
                     tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-                let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
                 let mut random = [0u8; 24];
                 rand::rngs::OsRng.fill_bytes(&mut random);
                 let credential = Zeroizing::new(
@@ -39,13 +37,14 @@ pub(crate) fn spawn(
                         .collect::<String>(),
                 );
                 random.zeroize();
+                let url = format!(
+                    "http://127.0.0.1:{}/{}/",
+                    listener.local_addr()?.port(),
+                    credential.as_str()
+                );
                 let (stop, shutdown) = tokio::sync::oneshot::channel();
-                tx.send(Event::Ready {
-                    url,
-                    credential: credential.clone(),
-                    stop,
-                })?;
-                vault_dav::serve_controlled(
+                tx.send(Event::Ready { url, stop })?;
+                vault_dav::serve_guest(
                     vault_fs::Store { vault, dir: path },
                     &credential,
                     listener,

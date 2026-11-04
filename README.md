@@ -8,7 +8,7 @@ Experimental Rust desktop app for a portable encrypted vault. Keep separate back
 cargo run -p vault-gui
 ```
 
-Home shows saved vaults and **Unlock / Lock / Create / Decrypt**. Each task opens a separate screen in the same native window. Choose a new vault folder to create; choose an existing vault to unlock. Unlock starts an authenticated loopback WebDAV server and, by default, requests a connection through your file manager. If prompted, the username is **vault** and the password is the temporary connection password shown in the app, not your vault password. OS mounting is not verified. Eject the volume before Lock.
+Home shows saved vaults and **Unlock / Lock / Create / Decrypt**. Each task opens a separate screen in the same native window. Choose a new vault folder to create; choose an existing vault to unlock. Unlock starts an authenticated loopback WebDAV server and, by default, requests a connection through your file manager. The GUI supports **Guest** access through a fresh per-unlock connection URL; choose Guest if Finder asks. The connection URL itself authorizes access and changes after locking. OS mounting is not verified. Eject the volume before Lock.
 
 Decrypt exports files to a new unencrypted folder under your chosen destination and preserves the encrypted source. The password-free vault list is saved beside the app as `vaults.json`. Put the app and vault folders together on the SSD for relative paths to survive drive changes.
 
@@ -43,8 +43,10 @@ Vault rows have a `...` menu to remove a shortcut without deleting encrypted fil
 
 ## SSD launchers / combined distribution
 
-Extract the whole portable ZIP, then use `VaultDrive.command` on Mac, `VaultDrive.sh` on Linux or `VaultDrive.bat` on Windows. The launcher chooses the OS/CPU and shares a single vault list at the root. `./build-complete.sh` builds this host's Release package. To create a complete package from all eight platform artifacts, run `./build-complete.sh --skip-build --require-all --artifact-dir /path/to/artifacts`. Windows has the equivalent `build-complete.bat`. Output ZIPs and SHA-256 checksums are under `target/distribution/`. See PORTABILITY.md for requirements and explicit partial-package behavior.
+Extract the whole portable ZIP, then double-click the root `VaultDrive.app` on Mac (no Terminal window), `VaultDrive.sh` on Linux or `VaultDrive.bat` on Windows. The launcher chooses the OS/CPU and shares a single vault list at the root. `./build-complete.sh` builds this host's Release package. To create a complete package from all eight platform artifacts, run `./build-complete.sh --skip-build --require-all --artifact-dir /path/to/artifacts`. Windows has the equivalent `build-complete.bat`. Output ZIPs and SHA-256 checksums are under `target/distribution/`. See PORTABILITY.md for requirements and explicit partial-package behavior.
 
 The default local build succeeds with the available platforms and labels incomplete output `VaultDrive-partial.zip`. Use `--require-all` to enforce a complete eight-platform distribution.
 
 Tag builds and ordinary manual Actions builds now require code signing/notarization. Configure the repository secrets described in `docs/SIGNING.md`; absent credentials fail preflight. Manual `unsigned_preview` is available for development only. Local development packaging remains unsigned unless `--require-signatures` is supplied. Previous unsigned artifacts remain unsigned; this configuration does not retroactively sign them.
+
+GUI password fields accept printable ASCII only (English letters, digits, spaces and symbols); IME composition and non-ASCII/mixed pasted text are rejected as a whole. Existing non-ASCII vault passwords remain supported by the CLI; the encrypted format is unchanged. `.command`/`.sh` remain terminal-based fallback launchers.

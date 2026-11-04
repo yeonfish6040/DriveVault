@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 import plistlib
+import platform
+import subprocess
 import shutil
 import tempfile
 import zipfile
@@ -49,6 +51,15 @@ def decorate(stage):
     (stage / 'VaultDrive.command').chmod(0o755)
     for name in ('README.md', 'docs/SECURITY.md', 'docs/PORTABILITY.md', 'docs/VALIDATION.md'):
         shutil.copy2(ROOT / name, stage / Path(name).name)
+
+def mac_launcher(stage):
+    """Build one native universal launcher for both Apple Silicon and Intel."""
+    contents=stage/'VaultDrive.app/Contents'
+    (contents/'MacOS').mkdir(parents=True)
+    with (contents/'Info.plist').open('wb') as f:
+        plistlib.dump(dict(CFBundleExecutable='VaultDriveLauncher',CFBundleIdentifier='dev.vaultdrive.launcher',CFBundleName='VaultDrive',CFBundlePackageType='APPL',CFBundleVersion='0.1.0',CFBundleShortVersionString='0.1.0',LSUIElement=True),f)
+    subprocess.run(['xcrun','clang','-arch','arm64','-arch','x86_64','-mmacosx-version-min=11.0','-Os','-fobjc-arc','-framework','Cocoa',str(ROOT/'packaging/MacLauncher.m'),'-o',str(contents/'MacOS/VaultDriveLauncher')],check=True)
+
 
 def manifest(stage, targets, profile, source_id=None, signing=None):
     files = {p.relative_to(stage).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -98,13 +109,15 @@ def package(target, binary_dir=None, profile='release', out=None, signed=False):
         cli = destination / ('vault.exe' if 'windows' in target else 'vault')
         for binary in (gui, cli):
             validate_executable(binary.read_bytes(), target)
+        decorate(stage)
+        if 'apple-darwin' in target and platform.system()=='Darwin':
+            mac_launcher(stage)
         attestation = {'kind': 'not-applicable' if 'linux' in target else 'unsigned'}
         if signed:
             if profile != 'release':
                 raise ValueError('Distribution signing requires a release build')
             from signing import sign
             attestation = sign(destination, target)
-        decorate(stage)
         manifest(stage, [target], profile, signing={target: attestation})
         output = (out or ROOT / 'target/portable') / f'{stage.name}.zip'
         result = archive(stage, output)
